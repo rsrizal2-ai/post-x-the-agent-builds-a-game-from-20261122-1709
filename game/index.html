@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NEON DODGE — built from one prompt</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; padding: 0; background: #070312; overflow: hidden; height: 100%; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud {
+    position: fixed; top: 18px; left: 0; right: 0; text-align: center;
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    color: #39f5ff; font-size: 34px; letter-spacing: 4px;
+    text-shadow: 0 0 18px rgba(57,245,255,.9); pointer-events: none;
+  }
+  #hud small { color: #ff2e88; font-size: 20px; letter-spacing: 2px; }
+</style>
+</head>
+<body>
+<div id="hud">SCORE <span id="score">0</span> &nbsp;·&nbsp; <small>NEON DODGE</small></div>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+/* NEON DODGE — a tiny arcade dodger, written from one prompt:
+   "Build me a tiny browser game I can play right now."
+   Steer the ship, dodge the falling blocks, chase the score. */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const scoreEl = document.getElementById("score");
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+const AUTO = new URLSearchParams(location.search).has("auto");
+const W = () => canvas.width, H = () => canvas.height;
+
+const ship = { x: 0, y: 0, w: 64, h: 26, vx: 0, tilt: 0 };
+ship.x = W() / 2; ship.y = H() - 140;
+
+const keys = {};
+window.addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if (e.key === " " && state === "over") reset();
+  if (["ArrowLeft", "ArrowRight", " "].includes(e.key)) e.preventDefault();
+});
+window.addEventListener("keyup", e => { keys[e.key] = false; });
+
+let obstacles = [], stars = [], particles = [];
+let score = 0, best = 0, speed = 3.2, spawnTimer = 0, state = "play", t = 0;
+let flash = 0;
+
+for (let i = 0; i < 90; i++)
+  stars.push({ x: Math.random(), y: Math.random(), s: Math.random() * 2 + 0.5, v: Math.random() * 0.6 + 0.2 });
+
+function spawn() {
+  const w = 34 + Math.random() * 70;
+  obstacles.push({
+    x: Math.random() * (W() - w), y: -60, w, h: 26 + Math.random() * 40,
+    vy: speed * (0.8 + Math.random() * 0.5),
+    hue: Math.random() < 0.5 ? "#ff2e88" : "#ff9f1c",
+    rot: (Math.random() - 0.5) * 0.6
+  });
+}
+
+function reset() {
+  obstacles = []; particles = [];
+  score = 0; speed = 3.2; state = "play"; flash = 0;
+  ship.x = W() / 2;
+}
+
+/* Auto-pilot: steer away from the nearest threat above the ship. */
+function autopilot() {
+  let threat = null;
+  for (const o of obstacles) {
+    if (o.y + o.h > ship.y - 260 && o.y < ship.y && (!threat || o.y > threat.y)) threat = o;
+  }
+  if (!threat) { ship.vx *= 0.9; return; }
+  const cx = threat.x + threat.w / 2;
+  const overlap = cx > ship.x - ship.w && cx < ship.x + ship.w;
+  if (!overlap) return;
+  const goLeft = (ship.x - threat.x) < (threat.x + threat.w - ship.x);
+  ship.vx += goLeft ? -1.6 : 1.6;
+}
+
+function explode() {
+  for (let i = 0; i < 46; i++) {
+    particles.push({
+      x: ship.x, y: ship.y,
+      vx: (Math.random() - 0.5) * 12, vy: (Math.random() - 0.5) * 12,
+      life: 1, c: i % 2 ? "#39f5ff" : "#ff2e88"
+    });
+  }
+  flash = 14;
+}
+
+function update(dt) {
+  t += dt;
+  for (const s of stars) { s.y += s.v * dt / 16; if (s.y > 1) { s.y = 0; s.x = Math.random(); } }
+  if (state !== "play") return;
+
+  if (AUTO) autopilot();
+  else {
+    if (keys["ArrowLeft"] || keys["a"]) ship.vx -= 1.4;
+    if (keys["ArrowRight"] || keys["d"]) ship.vx += 1.4;
+  }
+  ship.vx *= 0.88;
+  ship.x += ship.vx * dt / 16;
+  ship.tilt = ship.vx * 0.03;
+  ship.x = Math.max(ship.w / 2, Math.min(W() - ship.w / 2, ship.x));
+
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) { spawn(); spawnTimer = Math.max(260, 900 - score * 2.2); }
+
+  score += dt / 34;
+  speed = 3.2 + score * 0.012;
+  scoreEl.textContent = Math.floor(score);
+
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const o = obstacles[i];
+    o.y += o.vy * dt / 16;
+    if (o.y > H() + 80) { obstacles.splice(i, 1); score += 5; continue; }
+    const hit = o.x < ship.x + ship.w / 2 - 6 && o.x + o.w > ship.x - ship.w / 2 + 6 &&
+                o.y < ship.y + ship.h / 2 && o.y + o.h > ship.y - ship.h / 2;
+    if (hit) {
+      state = "over"; best = Math.max(best, Math.floor(score));
+      explode();
+    }
+  }
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life -= 0.03;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  if (flash > 0) flash--;
+}
+
+function drawShip() {
+  ctx.save();
+  ctx.translate(ship.x, ship.y);
+  ctx.rotate(ship.tilt);
+  ctx.shadowColor = "#39f5ff"; ctx.shadowBlur = 26;
+  ctx.fillStyle = "#39f5ff";
+  ctx.beginPath();
+  ctx.moveTo(0, -ship.h / 2 - 8);
+  ctx.lineTo(ship.w / 2, ship.h / 2);
+  ctx.lineTo(0, ship.h / 4);
+  ctx.lineTo(-ship.w / 2, ship.h / 2);
+  ctx.closePath(); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#070312";
+  ctx.beginPath(); ctx.arc(0, -2, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#ff2e88";
+  ctx.beginPath(); ctx.arc(0, -2, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.fillStyle = "#070312";
+  ctx.fillRect(0, 0, W(), H());
+  ctx.fillStyle = "#ffffff";
+  for (const s of stars) {
+    ctx.globalAlpha = 0.25 + s.s * 0.25;
+    ctx.fillRect(s.x * W(), s.y * H(), s.s, s.s);
+  }
+  ctx.globalAlpha = 1;
+
+  // neon grid floor
+  ctx.strokeStyle = "rgba(57,245,255,0.12)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x < W(); x += 90) { ctx.moveTo(x, 0); ctx.lineTo(x, H()); }
+  for (let y = 0; y < H(); y += 90) { ctx.moveTo(0, y); ctx.lineTo(W(), y); }
+  ctx.stroke();
+
+  for (const o of obstacles) {
+    ctx.save();
+    ctx.translate(o.x + o.w / 2, o.y + o.h / 2);
+    ctx.rotate(o.rot);
+    ctx.shadowColor = o.hue; ctx.shadowBlur = 22;
+    ctx.fillStyle = o.hue;
+    ctx.fillRect(-o.w / 2, -o.h / 2, o.w, o.h);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillRect(-o.w / 2 + 5, -o.h / 2 + 5, o.w - 10, 4);
+    ctx.restore();
+  }
+
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.c;
+    ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
+  }
+  ctx.globalAlpha = 1;
+
+  if (state === "play") drawShip();
+
+  if (state === "over") {
+    ctx.fillStyle = "rgba(7,3,18,0.72)";
+    ctx.fillRect(0, 0, W(), H());
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ff2e88";
+    ctx.shadowColor = "#ff2e88"; ctx.shadowBlur = 30;
+    ctx.font = "bold 96px 'JetBrains Mono', monospace";
+    ctx.fillText("GAME OVER", W() / 2, H() / 2 - 30);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#39f5ff";
+    ctx.font = "bold 44px 'JetBrains Mono', monospace";
+    ctx.fillText("SCORE " + Math.floor(score) + "   ·   BEST " + best, W() / 2, H() / 2 + 50);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "28px 'JetBrains Mono', monospace";
+    ctx.fillText(AUTO ? "auto-pilot crashed it — your turn" : "press SPACE to play again", W() / 2, H() / 2 + 110);
+  }
+  if (flash > 0) {
+    ctx.fillStyle = "rgba(255,46,136," + (flash / 40) + ")";
+    ctx.fillRect(0, 0, W(), H());
+  }
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(50, now - last);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
